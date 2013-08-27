@@ -3,4 +3,7 @@
 # Import the modules automatically
 . "$(readlink -f $(dirname $(readlink -f $HOME/.xinitrc))/../)/lib/loader"
 shell_init
+#if ! uiuc_get_netid; then
+#  while ! xfce4-terminal; do; sleep 1; done &
+#fi
 graphical_autorun $@

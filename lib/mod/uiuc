@@ -1,0 +1,210 @@
+#!/usr/bin/env sh
+
+uiuc_get_arch () {
+  lscpu | grep Architecture | awk '{print $2}'
+}
+
+uiuc_test_netid () {
+  DATA="$(curl -u "$1:$2" "https://subversion.ews.illinois.edu/svn/fa12-cs225" 2>/dev/null)"
+  [ "$(echo "$DATA" | grep "Authorization Required")" = "" ]
+}
+
+uiuc_prompt_netid () {
+  echo -n "Netid: "
+  read NETID
+  echo -n "AD Password (Doesn't display any characters when typing): "
+  stty -echo
+  read PASS
+  stty echo
+  echo ""
+  uiuc_test_netid "$NETID" "$PASS"
+}
+
+uiuc_get_netid () {
+  NETID="$(cat "$HOME/.netid" 2>/dev/null)" || return 1
+  echo "$NETID"
+}
+
+uiuc_validate_netid () {
+  uiuc_get_netid >/dev/null && return 1
+  while ! uiuc_prompt_netid; do
+    echo ""
+    echo "Invalid Password"
+  done
+  echo "$NETID" > "$HOME/.netid"
+}
+
+uiuc_revalidate_netid () {
+  [ -z "$PASS" ] || return 0
+  rm -f "$HOME/.netid"
+  uiuc_validate_netid
+}
+
+uiuc_get_year () {
+  date +%y
+}
+
+uiuc_get_semester () {
+  MONTH="$(date +%m)"
+  DAY="$(date +%d)"
+  SEM="su"
+  if [ "$MONTH" -lt "5" ]; then
+    SEM="sp"
+  elif [ "$MONTH" -eq "5" ]; then
+    if [ "$DAY" -lt "20" ]; then
+      SEM="sp"
+    fi
+  elif [ "$MONTH" -ge "9" ]; then
+    SEM="fa"
+  elif [ "$MONTH" -eq "8" ]; then
+    if [ "$DAY" -gt "14" ]; then
+      SEM="fa"
+    fi
+  fi
+  echo $SEM
+}
+
+uiuc_install_packages () {
+  PKGS="$(sed 's/\n/ /' "$1" | sed 's/\(^ \| $\)//')"
+  [ -z "$PKGS" ] && return 0
+  while ! pacman -Sy --noconfirm $PKGS >/dev/null 2>&1; do
+    y_or_n "Failed to install packages. Check your internet connection and try again?" y || return 1
+  done
+}
+
+uiuc_subversion_init () {
+  [ ! -d "$HOME/svn" ] && mkdir "$HOME/svn"
+  rm -rf "$HOME/.subversion"
+  mkdir "$HOME/.subversion"
+  cp "$(dir_conf)/conf/subversion/servers" "$HOME/.subversion/servers"
+
+  if y_or_n "Would you like to store your password encrypted?" n; then
+	echo "Installing Keyring..." >&2
+    if ! uiuc_install_packages "$(dir_conf)/extra/keyring_packages"; then
+      rm "$HOME/.netid"
+      exit 1
+    fi
+  else
+	echo "store-plaintext-passwords = yes" >> $HOME/.subversion/servers
+  fi
+}
+
+uiuc_subversion_checkout() {
+  local ERROR=1000
+  local DIR="$HOME/svn/$2"
+  uiuc_validate_netid
+  while [ "$ERROR" -gt "0" ]; do
+	URL="https://subversion.ews.illinois.edu/svn/$(uiuc_get_semester)$(uiuc_get_year)-$1/$NETID"
+	if [ "$3" = "1" ]; then
+	  URL="https://subversion.ews.illinois.edu/svn/$(uiuc_get_semester)$(uiuc_get_year)-$1"
+	fi
+	if [ "$PASS" = "" ]; then
+	  RES="$(svn co --non-interactive "$URL" "$DIR" </dev/null 2>&1)"
+	else
+	  RES="$(svn co --non-interactive --username "$NETID" --password "$PASS" "$URL" "$DIR" </dev/null 2>&1)"
+	fi
+	RET="$?"
+	ERROR=0
+	if [ "$RET" != "0" ]; then
+      if [ "$(echo "$RES" | grep "Authentication failed")" != "" ]; then
+        RES="authorization failed"
+      fi
+	  if [ "$(echo "$RES" | grep "authorization failed")" != "" ]; then
+		if [ "$PASS" != "" ]; then
+		  echo 'Invalid Username or Password!' >&2
+	      PASS=""
+		fi
+        uiuc_revalidate_netid
+		ERROR=999
+	  elif [ "$(echo "$RES" | grep "Could not resolve hostname")" != "" ]; then
+		y_or_n 'Could not connect to EWS, Try Again?' y || return 1
+		echo "" >&2
+		ERROR=999
+	  elif [ "$(echo "$RES" | grep "forbidden")" != "" ]; then
+		echo 'Access Forbidden' >&2
+		echo 'Are you sure you are enrolled in this class?' >&2
+		return 1
+	  else
+		echo 'An unknown SVN error has occurred!' >&2
+		return 1
+	  fi
+	fi
+  done
+  return 0
+}
+
+uiuc_ssh_init () {
+  if y_or_n "Would you like to add ssh keys for easy ews access?" n; then
+    echo "Generating Keys..."
+    echo "\n\n" | ssh_genkeys >/dev/null 2>/dev/null
+	while true; do
+	  sshpass -p "$PASS" ssh -o StrictHostKeyChecking=no "${NETID}@remlnx.ews.illinois.edu" "if [ ! -d ~/.ssh ]; then mkdir ~/.ssh; fi; [ \"\$(cat ~/.ssh/authorized_keys | grep \"$(cat ~/.ssh/id_rsa.pub)\")\" = \"\" ] && echo \"$(cat ~/.ssh/id_rsa.pub)\" >> ~/.ssh/authorized_keys;" >/dev/null 2>&1
+	  if [ "$?" = "0" ]; then
+		echo "Added SSH Keys Successfully"
+		echo "Type the command \`ews\` to access an ews ssh session"
+        break
+	  else
+        y_or_n "Failed to set public key, Try Again?" y || break
+	  fi
+	done
+  fi
+}
+
+uiuc_course_init () {
+  local COURSE;
+  echo ""
+  setup
+  while true; do
+	echo ""
+	echo -n "Select a course to install, to finish leave the field blank: "
+	read COURSE
+	if [ "$COURSE" = "" ]; then
+	  break
+	fi
+	setup "$COURSE"
+  done
+  echo "If you would like to setup courses in the future"
+  echo "Use the command: setup <coursename>"
+}
+
+uiuc_init () {
+  local PASS;
+  if uiuc_validate_netid; then
+    echo "Initializing your environment..."
+    uiuc_subversion_init
+    uiuc_ssh_init
+    uiuc_course_init
+  fi
+}
+
+setup_usage() {
+  echo "Usage: $0 <course_name>"
+}
+
+setup_currently_available() {
+  echo "Currently Available Classes:"
+  array_from_str CLASSES "$(ls $(dir_conf)/classes)"
+  array_forall CLASSES "echo \"\t$1\""
+}
+
+setup () {
+  if [[ "$#" -eq "0" ]]; then
+	setup_currently_available
+	return 0
+  elif [[ "$#" -eq "1" && ! -d "$(dir_conf)/classes/$1" ]]; then
+	echo "Course $1 doesn't exist!"
+	setup_currently_available
+	return 1
+  elif [[ "$#" -ge "2" ]]; then
+	setup_usage
+	return 1
+  fi
+
+  echo "Preparing Environment for $1"
+  uiuc_install_packages "$(dir_conf)/classes/$1/packages" || return 1
+  if [ ! -d "$HOME/svn/$1" ]; then
+    uiuc_subversion_checkout "$1" "$1"
+  fi
+}
+
+alias ews='ssh $NETID@remlnx.ews.illinois.edu'

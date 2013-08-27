@@ -43,3 +43,6 @@ source $ZSH/oh-my-zsh.sh
 shell_theme
 alias sudo="nocorrect sudo"
 [ -f "$HOME/.zshrc.local" ] && source $HOME/.zshrc.local
+
+# UIUC VM Stuff
+uiuc_init
