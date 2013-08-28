@@ -65,9 +65,9 @@ uiuc_get_semester () {
 }
 
 uiuc_install_packages () {
-  PKGS="$(sed 's/\n/ /g' "$1" | sed 's/\(^ \| $\)//g')"
+  PKGS="$(cat "$1")"
   [ -z "$PKGS" ] && return 0
-  while ! pacman -Sy --noconfirm $PKGS >/dev/null 2>&1; do
+  while ! sudo pacman -Sy --noconfirm $(echo "$PKGS" | sed 's/\n/ /g') >/dev/null 2>&1; do
     y_or_n "Failed to install packages. Check your internet connection and try again?" y || return 1
   done
 }
